@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# =============================================================================
+# lmstudio-latest — Launcher for the most recent LM Studio AppImage
+# =============================================================================
+#
+# DESCRIPTION
+#   Automatically finds the newest LM Studio AppImage in ~/Apps/lmstudio
+#   and launches it — without ever needing to right-click → "Make executable"
+#   again. Works both from the terminal and from the app menu.
+#
+# INSTALLATION
+#   1. Copy the script to a directory in your PATH:
+#        cp lmstudio-latest ~/.local/bin/lmstudio-latest
+#   2. Make it executable (only once):
+#        chmod +x ~/.local/bin/lmstudio-latest
+#   3. After each update, simply launch with:
+#        lmstudio-latest
+#
+# LOG FILE
+#   When LM Studio is launched from the app menu (no terminal attached),
+#   all output is automatically redirected to a log file:
+#     ~/.cache/lmstudio-latest.log
+#   This is useful for debugging crashes or startup errors.
+#
+# NOTE ON FUSE
+#   AppImages normally use FUSE to mount themselves.
+#   On systems where FUSE is restricted (e.g. in some corporate/security
+#   configurations), APPIMAGE_EXTRACT_AND_RUN=1 is set as a fallback —
+#   the AppImage then extracts itself into a temporary directory and starts
+#   from there. This is safe on all systems; the first launch may be
+#   slightly slower.
+#
+# NOTE ON --no-sandbox
+#   LM Studio is based on Electron/Chromium, which may fail to start on
+#   some Linux environments if user namespaces are restricted. In that case,
+#   pass --no-sandbox explicitly:
+#
+#     lmstudio-latest --no-sandbox
+#
+#   For a locally trusted application this flag is generally safe.
+#   If you use the .desktop launcher, re-run lmstudio-update with
+#   --desktop --no-sandbox to add the flag to your app menu entry.
+#
+# REQUIREMENTS
+#   bash, find, sort, head, chmod
+#
+# =============================================================================
+
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# Settings
+# -----------------------------------------------------------------------------
+readonly APP_DIR="${LMSTUDIO_DIR:-${HOME}/Apps/lmstudio}"
+readonly LOG_FILE="${HOME}/.cache/lmstudio-latest.log"
+
+# -----------------------------------------------------------------------------
+# Safety check: AppImage directory must exist
+# -----------------------------------------------------------------------------
+if [[ ! -d "$APP_DIR" ]]; then
+  echo "ERROR: AppImage directory not found: $APP_DIR" >&2
+  echo "Please run 'lmstudio-update' first to download LM Studio." >&2
+  exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Logging: when no terminal is attached (launched from app menu),
+# redirect all output to a log file.
+# "[ ! -t 1 ]" means: "stdout is NOT connected to a terminal".
+# -----------------------------------------------------------------------------
+if [[ ! -t 1 ]]; then
+  mkdir -p "$(dirname "$LOG_FILE")"
+  exec >>"$LOG_FILE" 2>&1
+  echo "[$(date '+%F %T')] ---- lmstudio-latest started ----"
+fi
+
+# -----------------------------------------------------------------------------
+# Find the newest AppImage (sorted by modification date, newest first)
+#
+# Step by step:
+#   find ... -printf '%T@ %p\n'
+#     → prints each file as: "unix-timestamp /path/to/file"
+#   sort -nr
+#     → sorts numerically, descending → newest file first
+#   head -n1
+#     → takes only the first line (= newest file)
+#   cut -d' ' -f2-
+#     → removes the timestamp, keeps only the file path
+# -----------------------------------------------------------------------------
+latest="$(
+  find "$APP_DIR" -maxdepth 1 -type f -iname '*.appimage' \
+    -printf '%T@ %p\n' \
+  | sort -nr \
+  | head -n1 \
+  | cut -d' ' -f2-
+)"
+
+if [[ -z "${latest:-}" ]]; then
+  echo "ERROR: No AppImage found in: $APP_DIR" >&2
+  echo "Please run 'lmstudio-update' to download the latest version." >&2
+  exit 1
+fi
+
+echo "Launching: $latest"
+
+# -----------------------------------------------------------------------------
+# Ensure the executable bit is set.
+# lmstudio-update normally sets it already, but this is a safety net
+# in case the AppImage was placed here manually.
+# "-x" checks whether the executable bit is set.
+# -----------------------------------------------------------------------------
+if [[ ! -x "$latest" ]]; then
+  echo "Notice: AppImage was not executable — fixing now..."
+  chmod +x "$latest"
+fi
+
+# -----------------------------------------------------------------------------
+# APPIMAGE_EXTRACT_AND_RUN=1  (fallback only)
+#   Only set when FUSE is not available (no fusermount in PATH).
+#   In that case the AppImage extracts itself into a temporary directory
+#   and starts from there — safe on all systems, but slightly slower.
+#   On systems with FUSE this fallback is skipped.
+# -----------------------------------------------------------------------------
+if ! command -v fusermount &>/dev/null; then
+  export APPIMAGE_EXTRACT_AND_RUN=1
+fi
+
+# -----------------------------------------------------------------------------
+# Launch LM Studio; forward all arguments to the AppImage.
+#
+# "exec" replaces this shell process with LM Studio — no unnecessary
+# background process remains.
+# "$@" forwards all arguments passed to this script
+# (e.g. lmstudio-latest --no-sandbox).
+# -----------------------------------------------------------------------------
+exec "$latest" "$@"

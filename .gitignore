@@ -1,0 +1,8 @@
+# Ignore everything, allow only project files
+*
+!LICENSE
+!README.md
+!install.sh
+!lmstudio-latest
+!lmstudio-update
+!.gitignore

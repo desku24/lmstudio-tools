@@ -1,0 +1,395 @@
+#!/usr/bin/env bash
+# =============================================================================
+# lmstudio-update — Automatic updater for LM Studio on Linux
+# =============================================================================
+#
+# DESCRIPTION
+#   Downloads the latest LM Studio version into ~/Apps/lmstudio,
+#   makes it executable (AppImage) and removes older files of the same format.
+#   Optionally creates a stable symlink and a .desktop launcher.
+#
+# INSTALLATION
+#   1. Copy the script to a directory in your PATH:
+#        cp lmstudio-update ~/.local/bin/lmstudio-update
+#   2. Make it executable (only once):
+#        chmod +x ~/.local/bin/lmstudio-update
+#   3. Run it:
+#        lmstudio-update
+#
+# USAGE
+#   lmstudio-update [OPTIONS]
+#
+# OPTIONS
+#   --format  appimage|deb    Download format (default: appimage)
+#   --arch    x64|arm64       CPU architecture (default: auto-detected)
+#   --keep    N               Number of most recent files to keep (default: 1)
+#   --check                   Only check if an update is available, do not download
+#   --symlink                 Create stable symlink: ~/Apps/lmstudio/lmstudio-latest
+#   --desktop                 Create .desktop launcher in ~/.local/share/applications/
+#   --no-sandbox              Add --no-sandbox to the .desktop Exec line (Electron/Chromium fallback)
+#   --yes                     Skip confirmation prompt (e.g. for automated tasks)
+#   -h, --help                Show this help and exit
+#
+# EXAMPLES
+#   lmstudio-update                          # Interactive AppImage update
+#   lmstudio-update --yes                    # Silent update (e.g. via cron)
+#   lmstudio-update --format deb             # Download .deb instead
+#   lmstudio-update --check                  # Only check if a new version is available
+#   lmstudio-update --symlink --desktop      # Update + create launcher shortcuts
+#   lmstudio-update --arch arm64             # Download ARM64 version
+#
+# REQUIREMENTS
+#   bash >= 4.0, curl, find, awk, sort, mktemp
+#
+# =============================================================================
+
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# Constants
+# -----------------------------------------------------------------------------
+readonly APP_DIR="${LMSTUDIO_DIR:-${HOME}/Apps/lmstudio}"
+readonly BASE_URL="https://lmstudio.ai/download/latest/linux"
+readonly SYMLINK_NAME="lmstudio-latest"
+readonly DESKTOP_FILE="${HOME}/.local/share/applications/lmstudio.desktop"
+readonly LOG_PREFIX="[lmstudio-update]"
+
+# -----------------------------------------------------------------------------
+# Defaults (can be overridden via flags)
+# -----------------------------------------------------------------------------
+FORMAT="appimage"
+KEEP=1
+NO_PROMPT=0
+CREATE_SYMLINK=0
+CREATE_DESKTOP=0
+CHECK_ONLY=0
+DESKTOP_NO_SANDBOX=0
+
+# Auto-detect CPU architecture
+case "$(uname -m)" in
+  x86_64)  ARCH="x64"   ;;
+  aarch64) ARCH="arm64" ;;
+  *)       ARCH="x64"   ;;  # Fallback; can be overridden with --arch
+esac
+
+# -----------------------------------------------------------------------------
+# Helper functions
+# -----------------------------------------------------------------------------
+log()         { echo "${LOG_PREFIX} $*"; }
+error()       { echo "${LOG_PREFIX} ERROR: $*" >&2; }
+warn()        { echo "${LOG_PREFIX} WARNING: $*" >&2; }
+require_cmd() {
+  if ! command -v "$1" &>/dev/null; then
+    error "Required program not found: $1"
+    exit 1
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+Usage: lmstudio-update [OPTIONS]
+
+Downloads the latest LM Studio version and manages older versions.
+
+Options:
+  --format     appimage (default) or deb
+  --arch       x64 (default, auto-detected) or arm64
+  --keep       Number of most recent files to keep (default: 1)
+  --check      Only check if an update is available, do not download
+  --symlink    Create stable symlink ~/Apps/lmstudio/lmstudio-latest (AppImage only)
+  --desktop    Create ~/.local/share/applications/lmstudio.desktop
+  --no-sandbox Add --no-sandbox to the .desktop Exec line (Electron/Chromium fallback)
+  --yes        Skip confirmation prompt; run immediately
+  -h, --help   Show this help and exit
+
+Environment:
+  LMSTUDIO_DIR   Override the default install directory (default: ~/Apps/lmstudio)
+
+Examples:
+  lmstudio-update --yes --symlink --desktop
+  lmstudio-update --format deb
+  lmstudio-update --check
+EOF
+}
+
+# -----------------------------------------------------------------------------
+# Parse arguments
+# -----------------------------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --format)
+      FORMAT="${2:-}"
+      shift 2
+      ;;
+    --arch)
+      ARCH="${2:-}"
+      shift 2
+      ;;
+    --keep)
+      KEEP="${2:-}"
+      shift 2
+      ;;
+    --check)
+      CHECK_ONLY=1
+      shift
+      ;;
+    --symlink)
+      CREATE_SYMLINK=1
+      shift
+      ;;
+    --desktop)
+      CREATE_DESKTOP=1
+      shift
+      ;;
+    --no-sandbox)
+      DESKTOP_NO_SANDBOX=1
+      shift
+      ;;
+    --yes)
+      NO_PROMPT=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      error "Unknown parameter: $1"
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+# -----------------------------------------------------------------------------
+# Validate inputs
+# -----------------------------------------------------------------------------
+FORMAT="$(echo "$FORMAT" | tr '[:upper:]' '[:lower:]')"
+if [[ "$FORMAT" != "appimage" && "$FORMAT" != "deb" ]]; then
+  error "Invalid --format '$FORMAT' (expected: appimage or deb)"
+  exit 1
+fi
+
+ARCH="$(echo "$ARCH" | tr '[:upper:]' '[:lower:]')"
+if [[ "$ARCH" != "x64" && "$ARCH" != "arm64" ]]; then
+  error "Invalid --arch '$ARCH' (expected: x64 or arm64)"
+  exit 1
+fi
+
+if ! [[ "$KEEP" =~ ^[0-9]+$ ]] || [[ "$KEEP" -lt 1 ]]; then
+  error "Invalid --keep '$KEEP' (expected: integer >= 1)"
+  exit 1
+fi
+
+if [[ "$FORMAT" == "deb" && "$ARCH" == "arm64" ]]; then
+  warn "--format deb with --arch arm64 may not be available (no official ARM64 .deb from LM Studio)"
+  warn "Proceeding at your own risk — curl will abort if the file does not exist."
+fi
+
+if [[ "$FORMAT" == "deb" && "$CREATE_SYMLINK" -eq 1 ]]; then
+  warn "--symlink is only supported for AppImage; ignoring for .deb"
+  CREATE_SYMLINK=0
+fi
+
+if [[ "$FORMAT" == "deb" && "$CREATE_DESKTOP" -eq 1 ]]; then
+  warn "--desktop is only supported for AppImage; ignoring for .deb"
+  CREATE_DESKTOP=0
+fi
+
+if [[ "$CREATE_DESKTOP" -eq 1 && "$CREATE_SYMLINK" -eq 0 ]]; then
+  warn "--desktop without --symlink: the .desktop launcher will point to a versioned filename."
+  warn "After the next update the launcher will be broken unless you re-run with --desktop."
+  warn "Recommended: always combine --desktop with --symlink."
+fi
+
+# -----------------------------------------------------------------------------
+# Check prerequisites
+# -----------------------------------------------------------------------------
+require_cmd curl
+require_cmd find
+require_cmd awk
+
+# -----------------------------------------------------------------------------
+# Resolve the actual download URL (follow redirect to get the real filename)
+# -----------------------------------------------------------------------------
+url="${BASE_URL}/${ARCH}?format=${FORMAT}"
+
+log "Resolving latest version (this takes 1–2 seconds)..."
+log "URL: $url"
+
+# --range 0-0 fetches only the first byte of the response.
+# This follows all redirects and returns the final effective URL in under a second —
+# without downloading the full AppImage. Works reliably even on CDNs that
+# reject HEAD requests.
+final_url="$(curl -fsSL --range 0-0 -o /dev/null -w '%{url_effective}' "$url")"
+filename="$(basename "${final_url%%\?*}")"
+target_path="${APP_DIR}/${filename}"
+
+log "Latest file  : $filename"
+log "Target path  : $target_path"
+
+# --check mode: report and exit without downloading
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+  if [[ -f "$target_path" ]]; then
+    log "Already up to date: $filename"
+    exit 0
+  else
+    log "Update available: $filename"
+    exit 1   # Non-zero exit = update available (useful for scripting)
+  fi
+fi
+
+# Skip download if this exact file already exists
+if [[ -f "$target_path" ]]; then
+  log "Already up to date: $filename — nothing to do."
+  exit 0
+fi
+
+# -----------------------------------------------------------------------------
+# Check if LM Studio is currently running
+# -----------------------------------------------------------------------------
+if pgrep -fi "lmstudio" > /dev/null 2>&1; then
+  warn "LM Studio appears to be running."
+  warn "It is recommended to close it before updating."
+  if [[ "$NO_PROMPT" -ne 1 ]]; then
+    read -r -p "${LOG_PREFIX} Close LM Studio and continue? [y/N] " answer
+    case "$answer" in
+      y|Y|yes|YES) ;;
+      *) log "Aborted."; exit 0 ;;
+    esac
+  else
+    warn "--yes flag set: continuing without closing LM Studio."
+  fi
+fi
+
+# -----------------------------------------------------------------------------
+# Confirmation prompt (skipped with --yes)
+# -----------------------------------------------------------------------------
+if [[ "$NO_PROMPT" -ne 1 ]]; then
+  echo
+  echo "  File     : $filename"
+  echo "  Directory: $APP_DIR"
+  echo "  Keep     : the $KEEP most recent ${FORMAT} file(s), older ones will be deleted"
+  echo
+  read -r -p "Download now and replace older ${FORMAT} files? [y/N] " answer
+  case "$answer" in
+    y|Y|yes|YES) ;;
+    *) log "Aborted."; exit 0 ;;
+  esac
+fi
+
+# -----------------------------------------------------------------------------
+# Download
+# -----------------------------------------------------------------------------
+mkdir -p "$APP_DIR"
+
+# Use a temp file so an interrupted download never leaves a broken target file
+tmp_file="$(mktemp "${APP_DIR}/.lmstudio-download-XXXXXX")"
+trap 'rm -f "$tmp_file"' EXIT   # Always clean up temp file on exit
+
+log "Downloading..."
+if [[ -t 1 ]]; then
+  curl -fL --progress-bar "$url" -o "$tmp_file"
+else
+  curl -fsSL "$url" -o "$tmp_file"
+fi
+mv -f "$tmp_file" "$target_path"
+trap - EXIT   # Download successful — remove cleanup trap
+
+# Make AppImages executable immediately after download
+if [[ "$FORMAT" == "appimage" ]]; then
+  chmod +x "$target_path"
+  log "Made executable: $target_path"
+fi
+
+# -----------------------------------------------------------------------------
+# Clean up: remove old files beyond the --keep threshold
+# -----------------------------------------------------------------------------
+log "Cleaning up old ${FORMAT} files (keeping the $KEEP most recent)..."
+
+# Build sorted file list (newest first)
+mapfile -t files < <(
+  find "$APP_DIR" -maxdepth 1 -type f -iname "*.${FORMAT}" \
+    -printf '%T@ %p\n' \
+  | sort -nr \
+  | awk '{ $1=""; sub(/^ /,""); print }'
+)
+
+if [[ "${#files[@]}" -gt "$KEEP" ]]; then
+  for old_file in "${files[@]:$KEEP}"; do
+    rm -f -- "$old_file"
+    log "Removed old file: $old_file"
+  done
+else
+  log "No old files to remove."
+fi
+
+# -----------------------------------------------------------------------------
+# Optional: create stable symlink  (~/Apps/lmstudio/lmstudio-latest)
+# The symlink always points to the current AppImage,
+# so the launch command never needs to change after an update.
+# -----------------------------------------------------------------------------
+if [[ "$CREATE_SYMLINK" -eq 1 ]]; then
+  symlink_path="${APP_DIR}/${SYMLINK_NAME}"
+  ln -sf "$target_path" "$symlink_path"
+  log "Symlink updated: $symlink_path -> $target_path"
+  log "Launch LM Studio with:  ${symlink_path}"
+fi
+
+# -----------------------------------------------------------------------------
+# Optional: create .desktop launcher
+# This makes LM Studio appear in the desktop environment's app menu.
+# -----------------------------------------------------------------------------
+if [[ "$CREATE_DESKTOP" -eq 1 ]]; then
+  # Prefer the stable symlink as the Exec path (if it was just created)
+  if [[ "$CREATE_SYMLINK" -eq 1 ]]; then
+    exec_path="${APP_DIR}/${SYMLINK_NAME}"
+  else
+    exec_path="$target_path"
+  fi
+
+  # Build Exec line — optionally include --no-sandbox
+  if [[ "$DESKTOP_NO_SANDBOX" -eq 1 ]]; then
+    exec_line="${exec_path} --no-sandbox %U"
+  else
+    exec_line="${exec_path} %U"
+  fi
+
+  mkdir -p "$(dirname "$DESKTOP_FILE")"
+  cat > "$DESKTOP_FILE" <<DESKTOP
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=LM Studio
+Comment=Run AI models locally
+Exec=${exec_line}
+Icon=lmstudio
+Terminal=false
+Categories=Science;Education;Utility;
+StartupWMClass=lmstudio
+DESKTOP
+
+  # Refresh desktop database if the tool is available
+  if command -v update-desktop-database &>/dev/null; then
+    update-desktop-database "$(dirname "$DESKTOP_FILE")" 2>/dev/null || true
+  fi
+
+  log "Desktop launcher updated: $DESKTOP_FILE"
+fi
+
+# -----------------------------------------------------------------------------
+# Summary
+# -----------------------------------------------------------------------------
+echo
+log "Done!"
+log "Installed : $target_path"
+
+if [[ "$FORMAT" == "appimage" ]]; then
+  if [[ "$CREATE_SYMLINK" -eq 1 ]]; then
+    log "Launch with: ${APP_DIR}/${SYMLINK_NAME}"
+  else
+    log "Launch with: $target_path"
+  fi
+else
+  log "Install .deb with: sudo apt install \"$target_path\""
+fi
