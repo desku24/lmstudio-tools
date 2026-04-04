@@ -6,3 +6,6 @@
 !lmstudio-latest
 !lmstudio-update
 !.gitignore
+!assets/
+!assets/**
+!README_de.md
