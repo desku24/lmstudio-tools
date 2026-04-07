@@ -23,12 +23,10 @@
 #   This is useful for debugging crashes or startup errors.
 #
 # NOTE ON FUSE
-#   AppImages normally use FUSE to mount themselves.
-#   On systems where FUSE is restricted (e.g. in some corporate/security
-#   configurations), APPIMAGE_EXTRACT_AND_RUN=1 is set as a fallback —
-#   the AppImage then extracts itself into a temporary directory and starts
-#   from there. This is safe on all systems; the first launch may be
-#   slightly slower.
+#   AppImages require libfuse.so.2 to mount themselves.
+#   If it is missing, the script sets APPIMAGE_EXTRACT_AND_RUN=1 as a
+#   fallback — the AppImage then extracts itself into a temporary directory.
+#   This is safe on all systems; the first launch may be slightly slower.
 #
 # NOTE ON --no-sandbox
 #   LM Studio is based on Electron/Chromium, which may fail to start on
@@ -107,7 +105,6 @@ echo "Launching: $latest"
 # Ensure the executable bit is set.
 # lmstudio-update normally sets it already, but this is a safety net
 # in case the AppImage was placed here manually.
-# "-x" checks whether the executable bit is set.
 # -----------------------------------------------------------------------------
 if [[ ! -x "$latest" ]]; then
   echo "Notice: AppImage was not executable — fixing now..."
@@ -115,14 +112,30 @@ if [[ ! -x "$latest" ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-# APPIMAGE_EXTRACT_AND_RUN=1  (fallback only)
-#   Only set when FUSE is not available (no fusermount in PATH).
-#   In that case the AppImage extracts itself into a temporary directory
-#   and starts from there — safe on all systems, but slightly slower.
-#   On systems with FUSE this fallback is skipped.
+# FUSE check: AppImages require libfuse.so.2 to mount themselves.
+# If the library is missing, set APPIMAGE_EXTRACT_AND_RUN=1 as a fallback.
 # -----------------------------------------------------------------------------
-if ! command -v fusermount &>/dev/null; then
+if ! ldconfig -p 2>/dev/null | grep -q libfuse.so.2; then
+  echo "Notice: libfuse.so.2 not found — using extract-and-run fallback."
+  echo "On Ubuntu, you can install AppImage support with: sudo apt install libfuse2t64"
   export APPIMAGE_EXTRACT_AND_RUN=1
+fi
+
+# -----------------------------------------------------------------------------
+# Sandbox check: Electron/Chromium needs unprivileged user namespaces.
+# If they are disabled and --no-sandbox was not passed, warn the user.
+# -----------------------------------------------------------------------------
+userns_file="/proc/sys/kernel/unprivileged_userns_clone"
+if [[ -f "$userns_file" ]] && [[ "$(cat "$userns_file")" == "0" ]]; then
+  has_no_sandbox=0
+  for arg in "$@"; do
+    [[ "$arg" == "--no-sandbox" ]] && has_no_sandbox=1
+  done
+  if [[ "$has_no_sandbox" -eq 0 ]]; then
+    echo "WARNING: Unprivileged user namespaces are disabled on this system."
+    echo "WARNING: LM Studio may fail to start without --no-sandbox."
+    echo "WARNING: If that happens, run: lmstudio-latest --no-sandbox"
+  fi
 fi
 
 # -----------------------------------------------------------------------------

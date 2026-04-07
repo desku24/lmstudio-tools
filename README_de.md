@@ -4,6 +4,8 @@
 
 Kleine Shell-Skripte für einen einfacheren **LM-Studio-AppImage-Workflow unter Linux**.
 
+![lmstudio-update --check](assets/check-demo.gif)
+
 `lmstudio-tools` hilft dabei, LM Studio schneller und sauberer zu nutzen:
 - neue Version herunterladen
 - ausführbar machen
@@ -110,10 +112,11 @@ source ~/.bashrc
 
 ## Voraussetzungen
 
-- Linux
+- Linux (x86_64)
 - bash >= 4.0
 - `curl`
 - `find`, `awk`, `sort`
+- `libfuse2t64` (für AppImages — installieren mit `sudo apt install libfuse2t64`)
 
 ## Getestet auf
 
