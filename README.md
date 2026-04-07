@@ -71,8 +71,6 @@ Example: every day at 20:00
 0 20 * * * $HOME/.local/bin/lmstudio-update --yes --symlink >> $HOME/.local/share/lmstudio-update.log 2>&1
 ```
 
-Note: the cron job only runs if the system is powered on at that time.
-
 ## lmstudio-latest
 
 ```bash

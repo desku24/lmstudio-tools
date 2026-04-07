@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.2.0
+
+### Added
+- FUSE2 check: warns if `libfuse.so.2` is missing (does not abort)
+- Sandbox check: detects disabled user namespaces and hints at `--no-sandbox`
+- `libfuse2t64` listed in requirements
+
+### Changed
+- `.desktop` icon set to `application-x-executable` (works on all systems)
+- FUSE fallback in `lmstudio-latest` now checks `ldconfig` instead of `fusermount`
+
+### Removed
+- `--arch` option (focus on x86_64 only)
+- `--format deb` option (focus on AppImage only)
+
+---
+
 ## v0.1.0
 
 ### Added

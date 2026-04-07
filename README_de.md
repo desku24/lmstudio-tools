@@ -73,8 +73,6 @@ Beispiel: täglich um 20:00 Uhr
 0 20 * * * $HOME/.local/bin/lmstudio-update --yes --symlink >> $HOME/.local/share/lmstudio-update.log 2>&1
 ```
 
-Hinweis: Der Cron-Job läuft nur, wenn das System zu diesem Zeitpunkt eingeschaltet ist.
-
 ## lmstudio-latest
 
 ```bash
